@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -28,6 +27,11 @@ type Config struct {
 	Network struct {
 		InterfaceIP string `yaml:"interface_ip"`
 		DNS         string `yaml:"dns,omitempty"`
+		Retry       struct {
+			MaxRetries    int `yaml:"max_retries"`
+			RetryDelay    int `yaml:"retry_delay_seconds"`
+			BackoffFactor int `yaml:"backoff_factor"`
+		} `yaml:"retry"`
 	} `yaml:"network"`
 	Logging struct {
 		Level string `yaml:"level"`
@@ -119,6 +123,16 @@ func loadConfig(configPath string) (*Config, error) {
 	if config.Logging.File == "" {
 		config.Logging.File = "./proxy.log"
 	}
+	// Set retry defaults
+	if config.Network.Retry.MaxRetries == 0 {
+		config.Network.Retry.MaxRetries = 3
+	}
+	if config.Network.Retry.RetryDelay == 0 {
+		config.Network.Retry.RetryDelay = 2
+	}
+	if config.Network.Retry.BackoffFactor == 0 {
+		config.Network.Retry.BackoffFactor = 2
+	}
 
 	return &config, nil
 }
@@ -187,7 +201,7 @@ func (ps *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (ps *ProxyServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Remove proxy-specific headers
 	r.RequestURI = ""
-
+	
 	// Ensure we have a complete URL
 	if r.URL.Scheme == "" {
 		r.URL.Scheme = "http"
@@ -198,14 +212,14 @@ func (ps *ProxyServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Create new request
 	outReq := r.Clone(r.Context())
-
+	
 	// Remove hop-by-hop headers
 	removeHopByHopHeaders(outReq.Header)
-
-	// Forward the request
-	resp, err := ps.httpClient.Do(outReq)
+	
+	// Forward the request with retry mechanism
+	resp, err := ps.retryableHTTPRequest(outReq)
 	if err != nil {
-		ps.logger.Printf("HTTP request failed: %v", err)
+		ps.logger.Printf("HTTP request failed after retries: %v", err)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -243,25 +257,12 @@ func (ps *ProxyServer) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create connection to target server using specific interface
+	// Create connection to target server with retry mechanism
 	targetAddr := net.JoinHostPort(host, port)
-
-	var targetConn net.Conn
-	if ps.config.Network.InterfaceIP != "" {
-		// Use custom dialer with interface binding
-		dialer := &net.Dialer{
-			LocalAddr: &net.TCPAddr{
-				IP: net.ParseIP(ps.config.Network.InterfaceIP),
-			},
-			Timeout: 10 * time.Second,
-		}
-		targetConn, err = dialer.Dial("tcp", targetAddr)
-	} else {
-		targetConn, err = net.DialTimeout("tcp", targetAddr, 10*time.Second)
-	}
-
+	
+	targetConn, err := ps.retryableTCPDial("tcp", targetAddr)
 	if err != nil {
-		ps.logger.Printf("Failed to connect to target %s: %v", targetAddr, err)
+		ps.logger.Printf("Failed to connect to target %s after retries: %v", targetAddr, err)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -299,7 +300,116 @@ func (ps *ProxyServer) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	io.Copy(clientConn, targetConn)
 }
 
-// removeHopByHopHeaders removes hop-by-hop headers
+// retryableHTTPClient creates an HTTP client with retry mechanism
+func (ps *ProxyServer) retryableHTTPRequest(req *http.Request) (*http.Response, error) {
+	var lastErr error
+	maxRetries := ps.config.Network.Retry.MaxRetries
+	retryDelay := time.Duration(ps.config.Network.Retry.RetryDelay) * time.Second
+	backoffFactor := ps.config.Network.Retry.BackoffFactor
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Wait before retry with exponential backoff
+			delay := retryDelay * time.Duration(1<<(attempt-1)*backoffFactor)
+			ps.logger.Printf("Retry attempt %d/%d after %v delay", attempt, maxRetries, delay)
+			time.Sleep(delay)
+		}
+
+		resp, err := ps.httpClient.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+
+		lastErr = err
+		ps.logger.Printf("Request attempt %d failed: %v", attempt+1, err)
+
+		// Check if error is retryable (network-related)
+		if !isRetryableError(err) {
+			ps.logger.Printf("Non-retryable error, stopping retries: %v", err)
+			break
+		}
+	}
+
+	return nil, fmt.Errorf("max retries exceeded, last error: %w", lastErr)
+}
+
+// isRetryableError determines if an error is worth retrying
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := strings.ToLower(err.Error())
+	retryableErrors := []string{
+		"connection refused",
+		"network is unreachable",
+		"no route to host",
+		"connection timed out",
+		"temporary failure",
+		"operation timed out",
+		"broken pipe",
+		"connection reset",
+		"interface not found",
+	}
+
+	for _, retryable := range retryableErrors {
+		if strings.Contains(errStr, retryable) {
+			return true
+		}
+	}
+
+	// Check for net.Error interface (timeout, temporary)
+	if netErr, ok := err.(net.Error); ok {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+
+	return false
+}
+
+// retryableTCPDial creates TCP connection with retry mechanism
+func (ps *ProxyServer) retryableTCPDial(network, address string) (net.Conn, error) {
+	var lastErr error
+	maxRetries := ps.config.Network.Retry.MaxRetries
+	retryDelay := time.Duration(ps.config.Network.Retry.RetryDelay) * time.Second
+	backoffFactor := ps.config.Network.Retry.BackoffFactor
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := retryDelay * time.Duration(1<<(attempt-1)*backoffFactor)
+			ps.logger.Printf("TCP dial retry attempt %d/%d after %v delay", attempt, maxRetries, delay)
+			time.Sleep(delay)
+		}
+
+		var conn net.Conn
+		var err error
+
+		if ps.config.Network.InterfaceIP != "" {
+			dialer := &net.Dialer{
+				LocalAddr: &net.TCPAddr{
+					IP: net.ParseIP(ps.config.Network.InterfaceIP),
+				},
+				Timeout: 10 * time.Second,
+			}
+			conn, err = dialer.Dial(network, address)
+		} else {
+			conn, err = net.DialTimeout(network, address, 10*time.Second)
+		}
+
+		if err == nil {
+			return conn, nil
+		}
+
+		lastErr = err
+		ps.logger.Printf("TCP dial attempt %d failed: %v", attempt+1, err)
+
+		if !isRetryableError(err) {
+			ps.logger.Printf("Non-retryable TCP error, stopping retries: %v", err)
+			break
+		}
+	}
+
+	return nil, fmt.Errorf("max TCP dial retries exceeded, last error: %w", lastErr)
+}
 func removeHopByHopHeaders(header http.Header) {
 	hopByHopHeaders := []string{
 		"Connection",
@@ -321,7 +431,7 @@ func removeHopByHopHeaders(header http.Header) {
 func (ps *ProxyServer) Start() error {
 	ps.logger.Printf("Starting proxy server on %s", ps.server.Addr)
 	ps.logger.Printf("Using interface IP: %s", ps.config.Network.InterfaceIP)
-
+	
 	return ps.server.ListenAndServe()
 }
 

@@ -10,6 +10,10 @@ listen:
 network:
   interface_ip: "192.168.1.100"  # 指定網卡IP
   dns: "8.8.8.8"                # 可選，DNS伺服器
+  retry:                         # 重試機制設定
+    max_retries: 3               # 最大重試次數
+    retry_delay_seconds: 2       # 重試延遲秒數
+    backoff_factor: 2            # 退避係數 (指數退避)
 
 logging:
   level: "error"                 # 日誌等級
@@ -114,6 +118,37 @@ sudo systemctl daemon-reload
 sudo systemctl enable network-proxy
 sudo systemctl start network-proxy
 ```
+
+## 重試機制說明
+
+### 網路中斷處理
+程序具備智能重試機制，特別針對手機網路不穩定情況：
+
+**重試條件**：
+- 連線被拒絕 (Connection refused)
+- 網路不可達 (Network unreachable) 
+- 連線逾時 (Connection timeout)
+- 暫時性錯誤 (Temporary failure)
+- 介面不存在 (Interface not found)
+
+**重試策略**：
+- **指數退避**：每次重試延遲時間遞增 (2秒 → 4秒 → 8秒)
+- **最大重試次數**：可配置，預設3次
+- **智能判斷**：只對網路相關錯誤重試，避免無意義重試
+
+**配置範例**：
+```yaml
+network:
+  retry:
+    max_retries: 5         # 手機網路建議設高一點
+    retry_delay_seconds: 3 # 初始延遲3秒
+    backoff_factor: 2      # 每次重試延遲翻倍
+```
+
+### 典型使用情境
+1. **手機移動時**：自動重試直到網路恢復
+2. **訊號微弱**：多次嘗試直到連線成功
+3. **網路切換**：從WiFi切到4G/5G時的過渡期
 
 ## 配置說明
 
