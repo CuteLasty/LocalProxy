@@ -1,0 +1,36 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch Package", // 除錯配置名稱
+            "type": "go", // 除錯器類型為 Go
+            "request": "launch", // 請求類型為啟動 (對應除錯應用程式)
+            "mode": "auto", // 自動偵測模式 (file/debug)
+            "program": "${fileDirname}", // 要除錯的程式碼路徑，這裡是當前檔案所在的目錄 (通常用於單一檔案除錯)
+            // "program": "${workspaceFolder}/main.go", // 如果是執行整個專案的 main 檔案，可以使用這個
+            "env": {}, // 環境變數
+            "args": [] // 傳遞給程式的命令列參數
+        },
+        {
+            "name": "Launch Current File", // 除錯配置名稱
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${file}", // 直接除錯當前開啟的 Go 檔案
+            "env": {},
+            "args": []
+        },
+        {
+            "name": "Debug Test Function", // 除錯測試函數
+            "type": "go",
+            "request": "launch",
+            "mode": "test", // 模式為測試
+            "program": "${file}", // 要除錯的測試檔案路徑
+            "args": [
+                "-test.v", // 顯示詳細的測試輸出
+                "-test.run", // 指定要執行的測試函數，例如：
+                // "TestMyFunction"
+            ]
+        }
+    ]
+}

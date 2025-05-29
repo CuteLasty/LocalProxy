@@ -1,0 +1,11 @@
+listen:
+  host: "127.0.0.1"
+  port: 8080
+
+network:
+  interface_ip: "192.168.1.100"
+  dns: "8.8.8.8"
+
+logging:
+  level: "error"
+  file: "./proxy.log"

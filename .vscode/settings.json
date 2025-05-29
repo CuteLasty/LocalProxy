@@ -1,0 +1,32 @@
+{
+    // Go 語言相關設定
+    "go.toolsManagement.autoUpdate": true, // 自動更新 Go 工具
+    "go.lintOnSave": "package", // 儲存時對整個 package 進行 Lint 檢查
+    "go.vetOnSave": "package", // 儲存時對整個 package 進行 Vet 檢查
+    "go.formatOnSave": true, // 儲存時自動格式化 Go 程式碼
+    "go.formatTool": "goimports", // 使用 goimports 進行格式化，它會自動管理 import
+    "go.lintTool": "golangci-lint", // 推薦使用 golangci-lint 作為 Linter
+    "go.useLanguageServer": true, // 啟用 Go 語言伺服器 (gopls)，提供更強大的功能
+    "go.gopath": "${env:GOPATH}", // 設定 GOPATH，通常會使用環境變數
+    "go.goroot": "${env:GOROOT}", // 設定 GOROOT，通常會使用環境變數
+    "go.testFlags": [ // 測試時的預設旗標
+        "-v"
+    ],
+    "go.buildFlags": [], // 建置時的預設旗標
+
+    // 編輯器通用設定
+    "editor.tabSize": 4, // 縮排大小為 4 個空格
+    "editor.insertSpaces": true, // 使用空格代替 Tab 進行縮排
+    "editor.formatOnSave": true, // 儲存時自動格式化 (適用於所有語言)
+    "editor.codeActionsOnSave": { // 儲存時執行的程式碼動作
+        "source.organizeImports": "explicit" // 儲存時自動整理 import (需要 goimports 或 gopls 支援)
+    },
+    "files.eol": "\n", // 檔案行尾符號設定為 LF (Linux/macOS 習慣)
+    "files.autoSave": "afterDelay", // 自動儲存檔案
+    "files.autoSaveDelay": 1000, // 自動儲存延遲時間 (毫秒)
+
+    // 檔案關聯 (如果需要)
+    "files.associations": {
+        "*.go": "go"
+    }
+}
